@@ -18,6 +18,22 @@
 use tg_kernel_context::LocalContext;
 use tg_syscall::{Caller, SyscallId};
 
+/// 获取系统调用号在计数表中的索引
+fn syscall_idx(id: SyscallId) -> Option<usize> {
+    use tg_syscall::SyscallId as Id;
+    match id {
+        Id::WRITE => Some(0),
+        Id::EXIT => Some(1),
+        Id::SCHED_YIELD => Some(2),
+        Id::CLOCK_GETTIME => Some(3),
+        Id::TRACE => Some(4),
+        _ => None,
+    }
+}
+
+/// 每个任务追踪的系统调用数量
+const SYSCALL_COUNT_CAPACITY: usize = 5;
+
 /// 任务控制块（Task Control Block, TCB）
 ///
 /// 每个用户程序对应一个 TCB，包含：
@@ -29,6 +45,8 @@ pub struct TaskControlBlock {
     ctx: LocalContext,
     /// 任务完成标志：true 表示已退出或被杀死
     pub finish: bool,
+    /// 系统调用计数表：存储特定系统调用的调用次数
+    syscall_counts: [usize; SYSCALL_COUNT_CAPACITY],
     /// 用户栈：8 KiB（1024 个 usize = 1024 × 8 = 8192 字节）
     /// 每个任务拥有独立的栈空间，避免栈溢出影响其他任务
     stack: [usize; 1024],
@@ -54,6 +72,7 @@ impl TaskControlBlock {
     pub const ZERO: Self = Self {
         ctx: LocalContext::empty(),
         finish: false,
+        syscall_counts: [0; SYSCALL_COUNT_CAPACITY],
         stack: [0; 1024],
     };
 
@@ -64,10 +83,20 @@ impl TaskControlBlock {
     /// - 将栈指针设置为用户栈的栈顶（高地址端）
     pub fn init(&mut self, entry: usize) {
         self.stack.fill(0);
+        self.syscall_counts.fill(0);
         self.finish = false;
         self.ctx = LocalContext::user(entry);
         // 栈从高地址向低地址增长，所以 sp 指向栈顶（数组末尾之后的地址）
         *self.ctx.sp_mut() = self.stack.as_ptr() as usize + core::mem::size_of_val(&self.stack);
+    }
+
+    /// 查询指定系统调用号的计数。
+    #[inline]
+    pub fn syscall_count(&self, syscall_id: usize) -> usize {
+        syscall_idx(SyscallId::from(syscall_id))
+            .and_then(|idx| self.syscall_counts.get(idx))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// 执行此任务
@@ -88,7 +117,10 @@ impl TaskControlBlock {
         use SchedulingEvent as Event;
 
         // a7 寄存器存放 syscall ID
-        let id = self.ctx.a(7).into();
+        let id: SyscallId = self.ctx.a(7).into();
+        if let Some(idx) = syscall_idx(id) {
+            self.syscall_counts[idx] += 1;
+        }
         // a0-a5 寄存器存放系统调用参数
         let args = [
             self.ctx.a(0),
@@ -98,7 +130,14 @@ impl TaskControlBlock {
             self.ctx.a(4),
             self.ctx.a(5),
         ];
-        match tg_syscall::handle(Caller { entity: 0, flow: 0 }, id, args) {
+        match tg_syscall::handle(
+            Caller {
+                entity: self as *const _ as usize,
+                flow: 0,
+            },
+            id,
+            args,
+        ) {
             Ret::Done(ret) => match id {
                 // exit 系统调用：返回退出事件
                 Id::EXIT => Event::Exit(self.ctx.a(0)),

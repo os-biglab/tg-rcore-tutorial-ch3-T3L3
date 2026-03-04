@@ -305,13 +305,23 @@ mod impls {
         #[inline]
         fn trace(
             &self,
-            _caller: Caller,
-            _trace_request: usize,
-            _id: usize,
-            _data: usize,
+            caller: Caller,
+            trace_request: usize,
+            id: usize,
+            data: usize,
         ) -> isize {
-            tg_console::log::info!("trace: not implemented");
-            -1
+            match trace_request {
+                0 => unsafe { *(id as *const u8) as isize },
+                1 => {
+                    unsafe { *(id as *mut u8) = data as u8 };
+                    0
+                }
+                2 => {
+                    let tcb = unsafe { &*(caller.entity as *const crate::task::TaskControlBlock) };
+                    tcb.syscall_count(id) as isize
+                }
+                _ => -1,
+            }
         }
     }
 }
