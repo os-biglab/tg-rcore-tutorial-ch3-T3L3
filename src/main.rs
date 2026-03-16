@@ -210,7 +210,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// 各依赖库所需接口的具体实现
 mod impls {
-    use tg_syscall::*;
+    use tg_syscall::{STDDEBUG, STDIN, STDOUT, *};
 
     /// 控制台实现：通过 SBI 逐字符输出
     pub struct Console;
@@ -227,6 +227,26 @@ mod impls {
 
     /// IO 系统调用实现：处理 write 系统调用
     impl IO for SyscallContext {
+        #[inline]
+        fn read(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
+            if count == 0 {
+                return 0;
+            }
+            match fd {
+                STDIN => match poll_stdin_char() {
+                    Some(c) => {
+                        unsafe { *(buf as *mut u8) = c };
+                        1
+                    }
+                    None => -2,
+                },
+                _ => {
+                    tg_console::log::error!("unsupported fd: {fd}");
+                    -1
+                }
+            }
+        }
+
         #[inline]
         fn write(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             match fd {
@@ -246,6 +266,27 @@ mod impls {
                 }
             }
         }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    #[inline]
+    fn poll_stdin_char() -> Option<u8> {
+        const UART_BASE: usize = 0x1000_0000;
+        const UART_DATA: usize = UART_BASE;
+        const UART_LSR: usize = UART_BASE + 5;
+
+        let lsr = unsafe { (UART_LSR as *const u8).read_volatile() };
+        if lsr & 0x01 != 0 {
+            Some(unsafe { (UART_DATA as *const u8).read_volatile() })
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    #[inline]
+    fn poll_stdin_char() -> Option<u8> {
+        None
     }
 
     /// Process 系统调用实现：处理 exit 系统调用

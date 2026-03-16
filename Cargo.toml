@@ -1,15 +1,15 @@
 [package]
-name = "tg-rcore-tutorial-ch3-T1L1"
-description = "Chapter 3 T1L1 of rCore Tutorial: Multiprogramming and time-sharing multitasking."
+name = "tg-rcore-tutorial-ch3-T3L3"
+description = "ch3-T3L3: Chapter 3 of rCore Tutorial with user-space Snake game and dual input modes."
 version = "0.0.1-preview.1"
 edition = "2024"
-authors = ["YdrMaster <ydrml@hotmail.com>","Yifan Wang<w-yf22@mails.tsinghua.edu.cn>","Yu Chen <yuchen@tsinghua.edu.cn>"]
-repository = "https://github.com/os-biglab/tg-rcore-tutorial-ch3-T1L1"
-homepage = "https://github.com/os-biglab/tg-rcore-tutorial-ch3-T1L1/tree/test"
-documentation = "https://github.com/os-biglab/tg-rcore-tutorial-ch3-T1L1/tree/test/docs"
+authors = ["Feiran Qin <qfr23@mails.tsinghua.edu.cn>"]
+repository = "https://github.com/os-biglab/tg-rcore-tutorial-ch3-T3L3"
+homepage = "https://github.com/os-biglab/tg-rcore-tutorial-ch3-T3L3/tree/test"
+documentation = "https://github.com/os-biglab/tg-rcore-tutorial-ch3-T3L3/tree/test/docs"
 license = "GPL-3.0"
 readme = "README.md"
-keywords = ["rcore", "tutorial", "no-std", "riscv", "multitasking"]
+keywords = ["ai","ai4ose","kernel","learning","os"]
 categories = ["no-std", "embedded"]
 exclude = [
     "tg-user/**",
@@ -29,13 +29,14 @@ panic = "abort"
 [dependencies]
 riscv = "0.10.1"
 
-tg-sbi = { package = "tg-rcore-tutorial-sbi", version = "0.4.5", features = ["nobios"] }
-tg-linker = { package = "tg-rcore-tutorial-linker", version = "0.4.5" }
-tg-console = { package = "tg-rcore-tutorial-console", version = "0.4.5" }
-tg-kernel-context = { package = "tg-rcore-tutorial-kernel-context", version = "0.4.5" }
-tg-syscall = { package = "tg-rcore-tutorial-syscall", version = "0.4.5", features = ["kernel"] }
+tg-sbi = { package = "tg-rcore-tutorial-sbi", version = "0.4.8", features = ["nobios"] }
+tg-linker = { package = "tg-rcore-tutorial-linker", version = "0.4.8" }
+tg-console = { package = "tg-rcore-tutorial-console", version = "0.4.8" }
+tg-kernel-context = { package = "tg-rcore-tutorial-kernel-context", version = "0.4.8" }
+tg-syscall = { package = "tg-rcore-tutorial-syscall", version = "0.4.8", features = ["kernel"] }
+virtio-drivers = { package = "virtio-drivers", version = "0.1.0" }
 
 [build-dependencies]
-tg-linker = { package = "tg-rcore-tutorial-linker", version = "0.4.5" }
+tg-linker = { package = "tg-rcore-tutorial-linker", version = "0.4.8" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
