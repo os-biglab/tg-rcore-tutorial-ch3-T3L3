@@ -27,7 +27,10 @@
 #![cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 
 // 任务管理模块：定义任务控制块（TCB）和调度事件
+mod gpu;
+mod plic;
 mod task;
+mod uart;
 
 // 引入控制台输出宏（print! / println!），由 tg_console 库提供
 #[macro_use]
@@ -103,6 +106,12 @@ extern "C" fn rust_main() -> ! {
     tg_syscall::init_clock(&SyscallContext);
     tg_syscall::init_trace(&SyscallContext);
 
+    #[cfg(target_arch = "riscv64")]
+    {
+        impls::init_graphics();
+        impls::init_input();
+    }
+
     // 第四步：初始化任务控制块数组，加载所有用户程序
     let mut tcbs = [TaskControlBlock::ZERO; APP_CAPACITY];
     let mut index_mod = 0;
@@ -128,8 +137,8 @@ extern "C" fn rust_main() -> ! {
             loop {
                 // 【抢占式调度】设置时钟中断：12500 个时钟周期后触发
                 // 当 coop feature 启用时，跳过此步（协作式调度，不使用时钟中断）
-                #[cfg(not(feature = "coop"))]
-                tg_sbi::set_timer(time::read64() + 12500);
+                // #[cfg(not(feature = "coop"))]
+                // tg_sbi::set_timer(time::read64() + 1250_0000);
 
                 // 切换到 U-mode 执行用户程序
                 // execute() 会恢复用户寄存器并执行 sret
@@ -143,8 +152,14 @@ extern "C" fn rust_main() -> ! {
                     Trap::Interrupt(Interrupt::SupervisorTimer) => {
                         // 清除时钟中断（设置为最大值，避免立即再次触发）
                         tg_sbi::set_timer(u64::MAX);
-                        log::trace!("app{i} timeout");
+                        impls::on_timer_tick();
+                        log::info!("app{i} timeout");
                         false // 不结束任务，切换到下一个
+                    }
+                    Trap::Interrupt(Interrupt::SupervisorExternal) => {
+                        log::info!("handle external interrupt");
+                        impls::handle_external_interrupt();
+                        false
                     }
                     // ─── 系统调用：用户程序执行了 ecall 指令 ───
                     Trap::Exception(Exception::UserEnvCall) => {
@@ -210,7 +225,19 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 /// 各依赖库所需接口的具体实现
 mod impls {
+    use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use crate::{gpu, plic::{IntrTargetPriority, Plic}, uart};
     use tg_syscall::{STDDEBUG, STDIN, STDOUT, *};
+
+    const MODE_POLLING: u8 = 0;
+    const MODE_INTERRUPT: u8 = 1;
+
+    const PLIC_BASE: usize = 0x0c00_0000;
+    const HART_ID: usize = 0;
+
+    static INPUT_MODE: AtomicU8 = AtomicU8::new(MODE_POLLING);
+    static INPUT_READY: AtomicBool = AtomicBool::new(false);
+    static INPUT_KEY: AtomicU8 = AtomicU8::new(0);
 
     /// 控制台实现：通过 SBI 逐字符输出
     pub struct Console;
@@ -233,13 +260,21 @@ mod impls {
                 return 0;
             }
             match fd {
-                STDIN => match poll_stdin_char() {
-                    Some(c) => {
-                        unsafe { *(buf as *mut u8) = c };
-                        1
+                STDIN => {
+                    let mode = INPUT_MODE.load(Ordering::Acquire);
+                    let key = if mode == MODE_POLLING {
+                        pop_input_key().or_else(poll_uart_char)
+                    } else {
+                        pop_input_key()
+                    };
+                    match key {
+                        Some(c) => {
+                            unsafe { *(buf as *mut u8) = c };
+                            1
+                        }
+                        None => -2,
                     }
-                    None => -2,
-                },
+                }
                 _ => {
                     tg_console::log::error!("unsupported fd: {fd}");
                     -1
@@ -266,27 +301,6 @@ mod impls {
                 }
             }
         }
-    }
-
-    #[cfg(target_arch = "riscv64")]
-    #[inline]
-    fn poll_stdin_char() -> Option<u8> {
-        const UART_BASE: usize = 0x1000_0000;
-        const UART_DATA: usize = UART_BASE;
-        const UART_LSR: usize = UART_BASE + 5;
-
-        let lsr = unsafe { (UART_LSR as *const u8).read_volatile() };
-        if lsr & 0x01 != 0 {
-            Some(unsafe { (UART_DATA as *const u8).read_volatile() })
-        } else {
-            None
-        }
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    #[inline]
-    fn poll_stdin_char() -> Option<u8> {
-        None
     }
 
     /// Process 系统调用实现：处理 exit 系统调用
@@ -364,6 +378,160 @@ mod impls {
                 _ => -1,
             }
         }
+    }
+
+    #[inline]
+    fn push_input_key(c: u8) {
+        INPUT_KEY.store(c, Ordering::Release);
+        INPUT_READY.store(true, Ordering::Release);
+    }
+
+    #[inline]
+    fn pop_input_key() -> Option<u8> {
+        if INPUT_READY.swap(false, Ordering::AcqRel) {
+            Some(INPUT_KEY.load(Ordering::Acquire))
+        } else {
+            None
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    #[inline]
+    fn poll_uart_char() -> Option<u8> {
+        uart::read_nonblocking()
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    #[inline]
+    fn poll_uart_char() -> Option<u8> {
+        None
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn uart_set_irq(enable: bool) {
+        uart::set_rx_interrupt(enable);
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    fn uart_set_irq(_enable: bool) {}
+
+    #[cfg(target_arch = "riscv64")]
+    fn plic_init_uart() {
+        let mut plic = unsafe { Plic::new(PLIC_BASE) };
+        plic.set_threshold(HART_ID, IntrTargetPriority::Supervisor, 0);
+        plic.set_threshold(HART_ID, IntrTargetPriority::Machine, 1);
+        plic.set_priority(uart::UART_IRQ as usize, 1);
+        plic.enable(
+            HART_ID,
+            IntrTargetPriority::Supervisor,
+            uart::UART_IRQ as usize,
+        );
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    fn plic_init_uart() {}
+
+    #[cfg(target_arch = "riscv64")]
+    fn plic_claim() -> u32 {
+        let mut plic = unsafe { Plic::new(PLIC_BASE) };
+        plic.claim(HART_ID, IntrTargetPriority::Supervisor)
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    fn plic_claim() -> u32 {
+        0
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn plic_complete(irq: u32) {
+        let mut plic = unsafe { Plic::new(PLIC_BASE) };
+        plic.complete(HART_ID, IntrTargetPriority::Supervisor, irq);
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    fn plic_complete(_irq: u32) {}
+
+    fn apply_input_mode(mode: u8) {
+        INPUT_MODE.store(mode, Ordering::Release);
+        match mode {
+            MODE_INTERRUPT => {
+                uart_set_irq(true);
+                #[cfg(target_arch = "riscv64")]
+                unsafe {
+                    riscv::register::sie::set_sext();
+                }
+            }
+            _ => {
+                uart_set_irq(false);
+                #[cfg(target_arch = "riscv64")]
+                unsafe {
+                    riscv::register::sie::clear_sext();
+                }
+            }
+        }
+    }
+
+    /// 初始化图形子系统（VirtIO GPU 与 framebuffer）。
+    pub(crate) fn init_graphics() {
+        gpu::init_graphics();
+    }
+
+    /// 初始化输入子系统（默认轮询模式，开启 UART PLIC 路由）。
+    pub(crate) fn init_input() {
+        uart::init();
+        plic_init_uart();
+        apply_input_mode(MODE_POLLING);
+    }
+
+    /// 每次时钟中断触发时执行：在轮询模式下从 UART 取字节。
+    pub(crate) fn on_timer_tick() {
+        if INPUT_MODE.load(Ordering::Acquire) == MODE_POLLING {
+            if let Some(c) = poll_uart_char() {
+                push_input_key(c);
+            }
+        }
+    }
+
+    /// 处理外部中断：在中断模式下通过 PLIC + UART 收集输入。
+    pub(crate) fn handle_external_interrupt() {
+        if INPUT_MODE.load(Ordering::Acquire) != MODE_INTERRUPT {
+            let irq = plic_claim();
+            if irq != 0 {
+                plic_complete(irq);
+            }
+            return;
+        }
+
+        let irq = plic_claim();
+        if irq == uart::UART_IRQ {
+            while let Some(c) = poll_uart_char() {
+                push_input_key(c);
+            }
+        }
+        if irq != 0 {
+            plic_complete(irq);
+        }
+    }
+
+    /// 设置输入模式系统调用后端：0 为轮询，1 为中断。
+    pub(crate) fn set_input_mode(mode: u8) -> isize {
+        match mode {
+            MODE_POLLING | MODE_INTERRUPT => {
+                apply_input_mode(mode);
+                0
+            }
+            _ => -1,
+        }
+    }
+
+    /// 返回 framebuffer 信息：基址、可用长度、宽、高。
+    pub(crate) fn framebuffer_info() -> Option<(usize, usize, usize, usize)> {
+        gpu::framebuffer_info()
+    }
+
+    /// 触发 framebuffer flush。
+    pub(crate) fn framebuffer_flush() -> isize {
+        gpu::framebuffer_flush()
     }
 }
 

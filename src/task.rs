@@ -18,6 +18,10 @@
 use tg_kernel_context::LocalContext;
 use tg_syscall::{Caller, SyscallId};
 
+const SYSCALL_FRAMEBUFFER: usize = 0x1000_0001;
+const SYSCALL_FRAMEBUFFER_FLUSH: usize = 0x1000_0002;
+const SYSCALL_SET_INPUT_MODE: usize = 0x1000_0003;
+
 /// 获取系统调用号在计数表中的索引
 fn syscall_idx(id: SyscallId) -> Option<usize> {
     use tg_syscall::SyscallId as Id;
@@ -115,6 +119,38 @@ impl TaskControlBlock {
     pub fn handle_syscall(&mut self) -> SchedulingEvent {
         use tg_syscall::{SyscallId as Id, SyscallResult as Ret};
         use SchedulingEvent as Event;
+
+        let raw_id = self.ctx.a(7);
+        if raw_id == SYSCALL_FRAMEBUFFER {
+            match crate::impls::framebuffer_info() {
+                Some((fb_ptr, fb_len, width, height)) => {
+                    *self.ctx.a_mut(0) = fb_ptr;
+                    *self.ctx.a_mut(1) = fb_len;
+                    *self.ctx.a_mut(2) = width;
+                    *self.ctx.a_mut(3) = height;
+                }
+                None => {
+                    *self.ctx.a_mut(0) = usize::MAX;
+                    *self.ctx.a_mut(1) = 0;
+                    *self.ctx.a_mut(2) = 0;
+                    *self.ctx.a_mut(3) = 0;
+                }
+            }
+            self.ctx.move_next();
+            return Event::None;
+        }
+        if raw_id == SYSCALL_FRAMEBUFFER_FLUSH {
+            *self.ctx.a_mut(0) = crate::impls::framebuffer_flush() as usize;
+            self.ctx.move_next();
+            return Event::None;
+        }
+        if raw_id == SYSCALL_SET_INPUT_MODE {
+            let mode = self.ctx.a(0) as u8;
+            let ret = crate::impls::set_input_mode(mode);
+            *self.ctx.a_mut(0) = ret as usize;
+            self.ctx.move_next();
+            return Event::None;
+        }
 
         // a7 寄存器存放 syscall ID
         let id: SyscallId = self.ctx.a(7).into();

@@ -29,10 +29,11 @@ panic = "abort"
 [dependencies]
 riscv = "0.10.1"
 
-tg-sbi = { package = "tg-rcore-tutorial-sbi", version = "0.4.8", features = ["nobios"] }
+tg-sbi = { package = "tg-rcore-tutorial-sbi-T2L2", version = "0.0.1-preview.2", features = ["nobios"] }
 tg-linker = { package = "tg-rcore-tutorial-linker", version = "0.4.8" }
 tg-console = { package = "tg-rcore-tutorial-console", version = "0.4.8" }
 tg-kernel-context = { package = "tg-rcore-tutorial-kernel-context", version = "0.4.8" }
+tg-kernel-alloc = { package = "tg-rcore-tutorial-kernel-alloc", version = "0.4.5" }
 tg-syscall = { package = "tg-rcore-tutorial-syscall", version = "0.4.8", features = ["kernel"] }
 virtio-drivers = { package = "virtio-drivers", version = "0.1.0" }
 
